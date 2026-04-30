@@ -7,7 +7,7 @@
 #include <ftxui/component/screen_interactive.hpp>
 
 #include <cstdio>
-
+#include <cassert>
 using namespace ftxui;
 
 namespace hwcommit {
@@ -63,6 +63,48 @@ Component MakeBodyInput(UIState& s) {
     InputOption option;
     option.multiline = true;
     return Input(&s.body, "enter body (optional, Ctrl+J for newline)", std::move(option));
+}
+
+// Each slot is a Container(Horizontal) wrapped in a Renderer that lays out
+// the toggle and input vertically so the key toggle has room to breathe.
+Components MakeFooterInput(UIState& s) {
+    static std::vector<std::string> footer_keys = {
+        "None", "BREAKING CHANGE", "Closes", "Affects", "Resource", "Timing"
+    };
+    // Create raw interactive components once, shared across slots
+    std::vector<Component> key_toggles;
+    std::vector<Component> value_inputs;
+    for (int i = 0; i < kMaxFooterSlots; ++i) {
+        key_toggles.push_back(
+            Toggle(&footer_keys, &s.footer_slots[i].key_index));
+        value_inputs.push_back(
+            Input(&s.footer_slots[i].value, "enter value"));
+    }
+
+    Components children;
+    for (int i = 0; i < kMaxFooterSlots; ++i) {
+        // Event routing: both components receive events
+        auto event_container = Container::Horizontal({
+            key_toggles[i], value_inputs[i]});
+        // Capture Component (shared_ptr) by value so the lambda owns a
+        // live reference after key_toggles / value_inputs go out of scope.
+        auto kt    = key_toggles[i];
+        auto vi    = value_inputs[i];
+        children.push_back(Renderer(event_container, [&s, kt, vi,i] {
+            bool disabled = s.footer_slots[i].key_index == 0;
+            auto key_row = kt->Render();
+            auto val_row = hbox({
+                text("  Value: "),
+                vi->Render() | flex,
+            });
+            if (disabled) {
+                key_row = key_row | dim;
+                val_row = val_row | dim;
+            }
+            return vbox({key_row, val_row});
+        }));
+    }
+    return children;
 }
 
 // Clipboard helper — best-effort, silently ignored if clip.exe unavailable.
@@ -128,24 +170,10 @@ auto RunTUI(TypeRegistry& types, ScopeRegistry& scopes) -> std::string {
     auto module_input   = MakeModuleInput(state);
     auto desc_input     = MakeDescriptionInput(state);
     auto body_input     = MakeBodyInput(state);
+    auto footer_inputs  = MakeFooterInput(state);
     auto action_bar     = MakeActionBar(state, screen, types, scopes);
 
-    // Footer components — each slot gets a key toggle + value input.
-    // Created here (not in a factory) so the Renderer can lay out each slot
-    // as two rows, giving the key toggle room to display all entries.
-    static std::vector<std::string> footer_keys = {
-        "None", "BREAKING CHANGE", "Closes", "Affects", "Resource", "Timing"
-    };
-    std::vector<Component> footer_key_toggles;
-    std::vector<Component> footer_value_inputs;
-    for (int i = 0; i < kMaxFooterSlots; ++i) {
-        footer_key_toggles.push_back(
-            Toggle(&footer_keys, &state.footer_slots[i].key_index));
-        footer_value_inputs.push_back(
-            Input(&state.footer_slots[i].value, "enter value"));
-    }
-
-    // Compose event-routing container (flat list of all interactive children)
+    // Compose event-routing container
     std::vector<Component> children = {
         type_selector,
         scope_selector,
@@ -153,11 +181,7 @@ auto RunTUI(TypeRegistry& types, ScopeRegistry& scopes) -> std::string {
         desc_input,
         body_input,
     };
-    for (int i = 0; i < kMaxFooterSlots; ++i) {
-        children.push_back(
-            Container::Horizontal({footer_key_toggles[i],
-                                   footer_value_inputs[i]}));
-    }
+    children.insert(children.end(), footer_inputs.begin(), footer_inputs.end());
     children.push_back(action_bar);
     auto main_container = Container::Vertical(std::move(children));
 
@@ -207,22 +231,10 @@ auto RunTUI(TypeRegistry& types, ScopeRegistry& scopes) -> std::string {
 
         rows.push_back(separator());
 
-        // Footers — each slot rendered as two rows: key toggle + value input
+        // Footers — each slot renders itself (key row + value row)
         rows.push_back(text(" Footers:") | bold);
-        for (int i = 0; i < kMaxFooterSlots; ++i) {
-            bool disabled = state.footer_slots[i].key_index == 0;
-
-            auto key_row = footer_key_toggles[i]->Render();
-            auto val_row = hbox({
-                text("  Value: "),
-                footer_value_inputs[i]->Render() | flex,
-            });
-            if (disabled) {
-                key_row = key_row | dim;
-                val_row = val_row | dim;
-            }
-            rows.push_back(key_row);
-            rows.push_back(val_row);
+        for (auto& fc : footer_inputs) {
+            rows.push_back(fc->Render());
         }
 
         rows.push_back(separator());
